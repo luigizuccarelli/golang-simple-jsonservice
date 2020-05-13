@@ -1,0 +1,196 @@
+{
+  "kind": "Template",
+  "apiVersion": "v1",
+  "metadata": {
+    "name": "simple-jsonservice",
+    "annotations": {
+      "description": "Threefold Systems POC",
+      "tags": "tfs,poc,golang",
+      "iconClass": "icon-golang"
+    }
+  },
+  "parameters": [
+    {
+      "name": "GOLANG_IMAGE",
+      "value": "nexus-registry-nexus.apps.aws2-dev.ocp.14west.io/simple-json",
+      "description": "The name of the golang image",
+      "required": true
+    },
+    {
+      "name": "GOLANG_IMAGE_VERSION",
+      "value": "1.13.1",
+      "description": "The version for the golang image",
+      "required": true
+    },
+    {
+      "name": "LOG_LEVEL",
+      "value": "info",
+      "description": "A default log level for all components",
+      "required": true
+    },
+    {
+      "name": "NAME",
+      "value": "simple-jsonservice",
+      "description": "A default name",
+      "required": true
+    },
+    {
+      "name": "VERSION",
+      "value": "1.13.1",
+      "description": "A default version",
+      "required": true
+    },
+    {
+      "name": "PORT",
+      "value": "9000",
+      "description": "A default server port",
+      "required": true
+    }
+  ],
+  "objects": [
+    {
+      "apiVersion": "v1",
+      "kind": "PersistentVolumeClaim",
+      "metadata": {
+        "name": "simple-json"
+      },
+      "spec": {
+        "accessModes": [ "ReadWriteOnce" ],
+        "resources": {
+          "requests": {
+             "storage": "512Mi"
+          }
+        }
+      }
+    },
+    {
+      "kind": "Service",
+      "apiVersion": "v1",
+      "metadata": {
+        "name": "simple-jsonservice",
+        "labels": {
+          "name": "simple-jsonservice"
+        }
+      },
+      "spec": {
+        "selector": {
+          "name": "simple-jsonservice"
+        },
+        "ports": [
+          {
+            "name": "simple-jsonservice-port",
+            "port": 9000,
+            "targetPort": 9000,
+            "protocol" : "TCP"
+          }
+        ]
+      }
+    },
+    {
+      "kind": "DeploymentConfig",
+      "apiVersion": "v1",
+      "metadata": {
+        "name": "simple-jsonservice",
+        "labels": {
+          "name": "simple-jsonservice"
+        }
+      },
+      "spec": {
+        "triggers": [
+          {
+            "type": "ConfigChange"
+          }
+        ],
+        "replicas": 1,
+        "selector": {
+          "name": "simple-jsonservice"
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "name": "simple-jsonservice"
+            }
+          },
+          "spec": {
+            "containers": [
+              {
+                "name": "simple-jsonservice",
+                "image": "${GOLANG_IMAGE}:${GOLANG_IMAGE_VERSION}",
+                "ports": [
+                  {
+                    "containerPort": 9000
+                  }
+                ],
+                "livenessProbe": {
+                  "httpGet": {
+                    "path": "/api/v2/sys/info/isalive",
+                    "port": 9000
+                  },
+                  "initialDelaySeconds": 55,
+                  "timeoutSeconds": 5,
+                  "periodSeconds": 60,
+                  "successThreshold": 1,
+                  "failureThreshold": 2
+                },
+                "readinessProbe": {
+                  "httpGet": {
+                    "path": "/api/v2/sys/info/isalive",
+                    "port": 9000
+                  },
+                  "initialDelaySeconds": 0,
+                  "timeoutSeconds": 5,
+                  "periodSeconds": 10,
+                  "successThreshold": 1,
+                  "failureThreshold": 1
+                },
+                "env": [
+                  {
+                    "name": "LOG_LEVEL",
+                    "value": "${LOG_LEVEL}"
+                  },
+                  {
+                    "name": "NAME",
+                    "value": "${NAME}"
+                  },
+                  {
+                    "name": "VERSION",
+                    "value": "${VERSION}"
+                  },
+                  {
+                    "name": "PORT",
+                    "value": "${PORT}"
+                  }
+                ],
+                "volumeMounts": [
+                  {
+                    "name": "gomount",
+                    "mountPath": "/go"
+                  }
+                ],
+                "imagePullPolicy": "Always",
+                "resources": {
+                  "limits": {
+                    "cpu": "250m",
+                    "memory": "100Mi"
+                  },
+                  "requests": {
+                    "cpu": "10m",
+                    "memory": "20Mi"
+                  }
+                }
+              }
+            ],
+            "volumes": [
+              {
+                "name": "gomount",
+                "persistentVolumeClaim": {
+                  "claimName": "simple-json"
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

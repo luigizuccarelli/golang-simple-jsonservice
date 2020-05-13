@@ -1,12 +1,14 @@
 package main
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net/http"
 	"os"
-	"strings"
+
+	"github.com/microlib/simple"
 )
 
 const (
@@ -14,76 +16,134 @@ const (
 	APPLICATIONJSON string = "application/json"
 )
 
+var (
+	payload ProjectDetail
+)
+
 // Response schema
 type Response struct {
-	Name       string `json:"name"`
-	StatusCode string `json:"statuscode"`
-	Status     string `json:"status"`
-	Message    string `json:"message"`
-	Counter    uint64 `json:"counter"`
-	Payload    string `json:"payload"`
+	Name       string     `json:"name"`
+	StatusCode string     `json:"statuscode"`
+	Status     string     `json:"status"`
+	Message    string     `json:"message"`
+	Payload    []Pipeline `json:"payload"`
 }
 
-func SimpleHandler(w http.ResponseWriter, r *http.Request) {
+type Repository struct {
+	Name     string `json:"name"`
+	MetaInfo string `json:"metainfo"`
+	WorkDir  string `json:"workdir"`
+	Path     string `json:"path"`
+	Scm      string `json:"scm"`
+	RawUrl   string `json:"cicd-raw-url"`
+	Skip     bool   `json:"skip"`
+	Force    bool   `json:"force"`
+}
+
+type ProjectDetail struct {
+	Project      string       `json:"project"`
+	Repositories []Repository `json:"repositories"`
+}
+
+type Pipeline struct {
+	Project    string        `json:"project"`
+	Scm        string        `json:"scm"`
+	Workdir    string        `json:"workdir"`
+	Force      bool          `json:"force"`
+	Stages     []StageDetail `json:"stages"`
+	LastUpdate int64         `json:"lastupdate,omitempty"`
+	MetaInfo   string        `json:"metainfo,omitempty"`
+}
+
+type StageDetail struct {
+	Id       int           `json:"id"`
+	Name     string        `json:"name"`
+	Exec     string        `json:"exec"`
+	Wait     int           `json:"wait"`
+	Service  string        `json:"service"`
+	Replicas int           `json:"replicas"`
+	Skip     bool          `json:"skip"`
+	Envars   []EnvarDetail `json:"envars"`
+	Commands []string      `json:"commands"`
+}
+
+type EnvarDetail struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+func JsonHandler(w http.ResponseWriter, r *http.Request, logger *simple.Logger) {
 	var response Response
 
-	passFail := r.URL.Query().Get("flag")
 	addHeaders(w, r)
-	handleOptions(w, r)
 
-	counter++
-
-	if passFail == "" || passFail == "fail" {
-		response = Response{Name: os.Getenv("NAME"), StatusCode: "500", Status: "ERROR", Message: "The system detected an error (simulated)"}
+	pipelines, err := buildSchema(logger)
+	if err != nil {
+		response = Response{Name: os.Getenv("NAME"), StatusCode: "500", Status: "KO", Message: "Error buildSchema", Payload: pipelines}
+		w.WriteHeader(http.StatusInternalServerError)
 	} else {
-		body, err := ioutil.ReadAll(r.Body)
-		if err != nil {
-			response = handleError(w, "Could not read body data "+err.Error())
-		} else {
-			response = Response{Name: os.Getenv("NAME"), StatusCode: "200", Status: "OK", Message: "Data uploaded succesfully", Counter: counter, Payload: string(body)}
-		}
+		response = Response{Name: os.Getenv("NAME"), StatusCode: "200", Status: "OK", Message: "Payload buildSchema succeeded", Payload: pipelines}
+		w.WriteHeader(http.StatusOK)
 	}
+
 	b, _ := json.MarshalIndent(response, "", "	")
-	logger.Debug(fmt.Sprintf("SimpleHandler response : %s", string(b)))
+	logger.Debug(fmt.Sprintf("JsonHandler response : %s", string(b)))
 	fmt.Fprintf(w, string(b))
 }
 
+func buildSchema(logger *simple.Logger) ([]Pipeline, error) {
+	var pipeline Pipeline
+	var pipelines []Pipeline
+
+	file, err := ioutil.ReadFile("project.json")
+	if err != nil {
+		logger.Error(fmt.Sprintf("Reading project.json %v", err))
+		return pipelines, err
+	}
+	err = json.Unmarshal(file, &payload)
+	if err != nil {
+		logger.Error(fmt.Sprintf("Unmarshalling project.json %v", err))
+		return pipelines, err
+	}
+
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	httpClient := &http.Client{Transport: tr}
+
+	for x, _ := range payload.Repositories {
+		req, _ := http.NewRequest("GET", payload.Repositories[x].RawUrl, nil)
+		req.Header.Set("X-Api-Key", os.Getenv("APIKEY"))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			logger.Error(fmt.Sprintf("Http request %v", err))
+			continue
+		}
+		defer resp.Body.Close()
+		body, e := ioutil.ReadAll(resp.Body)
+		if e != nil {
+			logger.Error(fmt.Sprintf("Could not read cicd.json file %v", e))
+			continue
+		}
+		err = json.Unmarshal(body, &pipeline)
+		if err != nil {
+			logger.Error(fmt.Sprintf("Unmarshalling project.json %v", err))
+			continue
+		}
+		pipelines = append(pipelines, pipeline)
+	}
+	return pipelines, nil
+}
+
 func IsAlive(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintf(w, "{ \"version\" : \"1.0.2\" , \"name\": \""+os.Getenv("NAME")+"\" }")
+	fmt.Fprintf(w, "{ \"version\" : \""+os.Getenv("VERSION")+"\" , \"name\": \""+os.Getenv("NAME")+"\" }")
 }
 
 // headers (with cors) utility
 func addHeaders(w http.ResponseWriter, r *http.Request) {
-	var request []string
-	for name, headers := range r.Header {
-		name = strings.ToLower(name)
-		for _, h := range headers {
-			request = append(request, fmt.Sprintf("%v: %v", name, h))
-		}
-	}
-
-	logger.Trace(fmt.Sprintf("Headers : %s", request))
-
 	w.Header().Set(CONTENTTYPE, APPLICATIONJSON)
-	// use this for cors
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
 	w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
-
-}
-
-// simple options handler
-func handleOptions(w http.ResponseWriter, r *http.Request) {
-	if r.Method == "OPTIONS" {
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "")
-	}
-	return
-}
-
-// simple error handler
-func handleError(w http.ResponseWriter, msg string) Response {
-	w.WriteHeader(http.StatusInternalServerError)
-	r := Response{Name: os.Getenv("NAME"), StatusCode: "500", Status: "ERROR", Message: msg}
-	return r
 }
